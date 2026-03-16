@@ -7,12 +7,15 @@
 # PREMIER DEPLOIEMENT (commandes manuelles a executer une seule fois) :
 #
 #   # 1. Activer le vhost Apache
-#   sudo cp /var/www/mypdfeditor/mypdfcreator.conf /etc/apache2/sites-available/
-#   sudo a2ensite mypdfcreator.conf
+#   sudo cp /var/www/mypdfeditor/mypdfcreator.conf /etc/apache2/sites-available/editpdf.conf
+#   sudo a2ensite editpdf.conf
 #   sudo a2enmod expires headers rewrite
 #   sudo systemctl reload apache2
 #
-#   # 2. Deployer normalement
+#   # 2. Installer le certificat SSL (editpdf.fr)
+#   sudo certbot --apache -d editpdf.fr -d www.editpdf.fr
+#
+#   # 3. Deployer normalement
 #   sudo bash deploy-editpdf.sh
 #
 # =============================================================================
