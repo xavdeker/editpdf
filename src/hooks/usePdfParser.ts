@@ -28,12 +28,18 @@ function xOverlap(
   return aMinX - tolerance <= bMaxX && bMinX - tolerance <= aMaxX;
 }
 
-/** Extract text colors from the page operator list */
-async function extractTextColors(page: { getOperatorList: () => Promise<{ fnArray: number[]; argsArray: unknown[][] }> }): Promise<RgbColor[]> {
+/** Extract the text color associated with each font name from the operator list.
+ *  Tracks the fill color at each setFont call, giving us the color used for text
+ *  rendered in that font. This is more reliable than tracking per text-showing op
+ *  (which can desync with textContent items). */
+async function extractFontColors(
+  page: { getOperatorList: () => Promise<{ fnArray: number[]; argsArray: unknown[][] }> }
+): Promise<Map<string, RgbColor>> {
   const OPS = pdfjsLib.OPS;
   const ops = await page.getOperatorList();
-  const colors: RgbColor[] = [];
+  const result = new Map<string, RgbColor>();
   let currentColor: RgbColor = { r: 0, g: 0, b: 0 };
+  let lastTextColor: RgbColor = { r: 0, g: 0, b: 0 };
 
   for (let i = 0; i < ops.fnArray.length; i++) {
     const fn = ops.fnArray[i];
@@ -57,11 +63,48 @@ async function extractTextColors(page: { getOperatorList: () => Promise<{ fnArra
       fn === OPS.nextLineShowText ||
       fn === OPS.nextLineSetSpacingShowText
     ) {
-      colors.push({ ...currentColor });
+      // The fill color at the moment text is shown is the actual text color
+      lastTextColor = { ...currentColor };
+    } else if (fn === OPS.setFont) {
+      // Don't overwrite with white — white text on white bg is likely a fill rect leak
+      const fontName = args[0] as string;
+      if (!result.has(fontName)) {
+        result.set(fontName, { ...lastTextColor });
+      }
     }
   }
 
-  return colors;
+  // Second pass: for fonts we missed, use the color active just before their first text op
+  let color2: RgbColor = { r: 0, g: 0, b: 0 };
+  let currentFont = '';
+  for (let i = 0; i < ops.fnArray.length; i++) {
+    const fn = ops.fnArray[i];
+    const args = ops.argsArray[i];
+
+    if (fn === OPS.setFillRGBColor) {
+      color2 = { r: args[0] as number, g: args[1] as number, b: args[2] as number };
+    } else if (fn === OPS.setFillGray) {
+      const g = args[0] as number;
+      color2 = { r: g, g: g, b: g };
+    } else if (fn === OPS.setFillCMYKColor) {
+      const [c, m, y, k] = args as number[];
+      color2 = { r: (1 - c) * (1 - k), g: (1 - m) * (1 - k), b: (1 - y) * (1 - k) };
+    } else if (fn === OPS.setFont) {
+      currentFont = args[0] as string;
+    } else if (
+      fn === OPS.showText ||
+      fn === OPS.showSpacedText ||
+      fn === OPS.nextLineShowText ||
+      fn === OPS.nextLineSetSpacingShowText
+    ) {
+      // This is the ACTUAL color used when drawing this text
+      if (currentFont && !(color2.r > 0.9 && color2.g > 0.9 && color2.b > 0.9)) {
+        result.set(currentFont, { ...color2 });
+      }
+    }
+  }
+
+  return result;
 }
 
 /** Detect bold/italic from a font name string */
@@ -305,24 +348,16 @@ export function usePdfParser() {
         const viewport = page.getViewport({ scale: 1 });
         const textContent = await page.getTextContent();
 
-        // Extract colors and font styles from operator list
-        const textColors = await extractTextColors(page);
+        // Extract font colors and styles from operator list
+        const fontColors = await extractFontColors(page);
         const fontStyles = await extractFontStyles(page);
-        let colorIndex = 0;
 
         const rawItems: RawItem[] = [];
 
         for (const item of textContent.items) {
           const textItem = item as TextItem;
 
-          // Each text-showing operator produces items; track color index
-          // even for empty items to stay in sync with operator list
-          const itemColor = textColors[colorIndex] ?? { r: 0, g: 0, b: 0 };
-
-          if (!textItem.str || textItem.str.trim() === '') {
-            if (textItem.str !== undefined) colorIndex++;
-            continue;
-          }
+          if (!textItem.str || textItem.str.trim() === '') continue;
 
           const tx = textItem.transform;
           const fontSize = Math.sqrt(tx[0] * tx[0] + tx[1] * tx[1]);
@@ -334,6 +369,8 @@ export function usePdfParser() {
           const fontFamily = mapPdfFontToWebFont(fontName, pdfJsFontFamily);
           // Use font style from commonObjs (more reliable) with fallback to name parsing
           const { isBold, isItalic } = fontStyles.get(fontName) ?? parseFontStyle(fontName);
+          // Color per font name (reliable, no index sync issues)
+          const itemColor = fontColors.get(fontName) ?? { r: 0, g: 0, b: 0 };
 
           rawItems.push({
             str: textItem.str,
@@ -350,7 +387,6 @@ export function usePdfParser() {
             transform: tx,
           });
 
-          colorIndex++;
           totalTextItems++;
         }
 

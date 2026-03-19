@@ -154,9 +154,7 @@ export function usePdfBuilder() {
                   y: lineY,
                   size: fontSize,
                   font,
-                  color: (block.color.r > 0.9 && block.color.g > 0.9 && block.color.b > 0.9)
-                    ? rgb(0, 0, 0)
-                    : rgb(block.color.r, block.color.g, block.color.b),
+                  color: rgb(block.color.r, block.color.g, block.color.b),
                 });
                 lineIndex++;
               }

@@ -33,12 +33,7 @@ function blockStyle(block: TextBlock, fontSize: number): React.CSSProperties {
   const fontFamily = block.fontFamily || 'Helvetica, sans-serif';
 
   const { r, g, b } = block.color;
-  // Guard: color extraction from PDF operator list can desync and return white;
-  // if color is near-white, fall back to black (original text is never white on white)
-  const isNearWhite = r > 0.9 && g > 0.9 && b > 0.9;
-  const color = isNearWhite
-    ? 'rgb(0, 0, 0)'
-    : `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
+  const color = `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
 
   return {
     fontSize: `${fontSize}px`,
