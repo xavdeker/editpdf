@@ -38,8 +38,16 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Label d'environnement (override via DEPLOY_LABEL dans .env.local, défaut : prod)
+DEPLOY_LABEL=""
+if [ -f "$APP_DIR/.env.local" ]; then
+    DEPLOY_LABEL=$(grep -E '^DEPLOY_LABEL=' "$APP_DIR/.env.local" | cut -d= -f2 | tr -d '"' | tr -d "'")
+fi
+DEPLOY_LABEL="${DEPLOY_LABEL:-prod}"
+
 echo -e "${BLUE}=============================================${NC}"
 echo -e "${BLUE}   Deploiement PDFEdit - $(date '+%Y-%m-%d %H:%M:%S')${NC}"
+echo -e "${BLUE}   Environnement : ${YELLOW}${DEPLOY_LABEL}${NC}"
 echo -e "${BLUE}=============================================${NC}"
 
 # Aller dans le repertoire de l'application
@@ -87,5 +95,5 @@ else
 fi
 
 echo -e "\n${BLUE}=============================================${NC}"
-echo -e "${GREEN}   Deploiement termine avec succes !${NC}"
+echo -e "${GREEN}   Deploiement termine avec succes ! (${DEPLOY_LABEL})${NC}"
 echo -e "${BLUE}=============================================${NC}"
