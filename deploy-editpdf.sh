@@ -7,7 +7,7 @@
 # PREMIER DEPLOIEMENT (commandes manuelles a executer une seule fois) :
 #
 #   # 1. Activer le vhost Apache
-#   sudo cp /var/www/editpdf/mypdfcreator.conf /etc/apache2/sites-available/editpdf.conf
+#   sudo cp /var/www/editpdf/editpdf.conf /etc/apache2/sites-available/editpdf.conf
 #   sudo a2ensite editpdf.conf
 #   sudo a2enmod expires headers rewrite
 #   sudo systemctl reload apache2
