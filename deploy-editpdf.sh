@@ -55,6 +55,10 @@ cd $APP_DIR
 
 # 1. Recuperer les dernieres modifications
 echo -e "\n${YELLOW}[1/5] Recuperation du code depuis GitHub...${NC}"
+# Autoriser git a operer sur le repo meme si le proprietaire differe du
+# compte qui lance le script (deploiement en root via sudo)
+git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$APP_DIR" \
+    || git config --global --add safe.directory "$APP_DIR"
 git fetch origin
 git reset --hard origin/$BRANCH
 chmod +x $APP_DIR/deploy-editpdf.sh
