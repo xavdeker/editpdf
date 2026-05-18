@@ -63,7 +63,7 @@ export default function PageThumbnails({
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
-        await page.render({ canvasContext: ctx, viewport: page.getViewport({ scale: 0.3 * dpr }) }).promise;
+        await page.render({ canvas, viewport: page.getViewport({ scale: 0.3 * dpr }) }).promise;
         if (!cancelled) setRendered((prev) => new Set(prev).add(pageIdx));
       } catch {
         // ignore render errors for thumbnails

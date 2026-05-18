@@ -132,7 +132,7 @@ export default function PdfViewer({
         setCanvasSize({ width: viewport.width, height: viewport.height });
         const context = canvas.getContext('2d');
         if (!context) return;
-        await page.render({ canvasContext: context, viewport: hiDpiViewport }).promise;
+        await page.render({ canvas, viewport: hiDpiViewport }).promise;
         if (cancelled) return;
 
         // Save a clean snapshot of the rendered page (before any white rects)

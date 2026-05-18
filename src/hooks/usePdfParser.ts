@@ -390,7 +390,7 @@ export function usePdfParser() {
             canvas.height = Math.ceil(rvp.height);
             const ctx = canvas.getContext('2d', { willReadFrequently: true });
             if (ctx) {
-              await page.render({ canvasContext: ctx, viewport: rvp }).promise;
+              await page.render({ canvas, viewport: rvp }).promise;
               const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
               for (const block of textBlocks) {
                 const c = sampleBlockColor(img, block, viewport.height, RENDER_SCALE);
