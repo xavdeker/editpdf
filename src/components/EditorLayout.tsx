@@ -71,16 +71,34 @@ const TOOL_COLORS = {
   pen: '#EF4444',
 };
 
+/** RgbColor (0-1 floats) → "#rrggbb" */
+function rgbToHex(c: { r: number; g: number; b: number }): string {
+  const h = (n: number) => Math.round(Math.max(0, Math.min(1, n)) * 255).toString(16).padStart(2, '0');
+  return `#${h(c.r)}${h(c.g)}${h(c.b)}`;
+}
+
+/** "#rrggbb" → RgbColor (0-1 floats) */
+function hexToRgb(hex: string): { r: number; g: number; b: number } {
+  const m = hex.replace('#', '').match(/.{2}/g);
+  if (!m) return { r: 0, g: 0, b: 0 };
+  return {
+    r: parseInt(m[0], 16) / 255,
+    g: parseInt(m[1], 16) / 255,
+    b: parseInt(m[2], 16) / 255,
+  };
+}
+
 interface EditorLayoutProps {
   pdfData: ArrayBuffer;
   pages: PageContent[];
   currentPage: number;
   onPageChange: (page: number) => void;
   onTextChange: (blockId: string, newText: string) => void;
-  onBlockFormatChange: (blockId: string, format: Partial<Pick<TextBlock, 'fontSize' | 'isBold' | 'isItalic' | 'fontFamily'>>) => void;
+  onBlockFormatChange: (blockId: string, format: Partial<Pick<TextBlock, 'fontSize' | 'isBold' | 'isItalic' | 'fontFamily' | 'color'>>) => void;
   onEraseBlock: (blockId: string) => void;
   onAddTextBlock: (pageIndex: number, x: number, y: number) => string;
   onBlockResize: (blockId: string, newWidth: number, newHeight: number) => void;
+  onBlockMove: (blockId: string, newX: number, newY: number) => void;
   onReset: () => void;
   highlights: HighlightAnnotation[];
   onHighlightsChange: (h: HighlightAnnotation[]) => void;
@@ -99,6 +117,7 @@ export default function EditorLayout({
   onEraseBlock,
   onAddTextBlock,
   onBlockResize,
+  onBlockMove,
   onReset,
   highlights,
   onHighlightsChange,
@@ -179,6 +198,11 @@ export default function EditorLayout({
   const handleFontFamilyChange = (fontFamily: string) => {
     if (!focusedBlockId) return;
     onBlockFormatChange(focusedBlockId, { fontFamily });
+  };
+
+  const handleColorChange = (hex: string) => {
+    if (!focusedBlockId) return;
+    onBlockFormatChange(focusedBlockId, { color: hexToRgb(hex) });
   };
 
   // Current page annotations
@@ -350,6 +374,29 @@ export default function EditorLayout({
             >
               <span className="w-4 h-4 flex items-center justify-center text-xs italic">I</span>
             </button>
+
+            <div className="h-5 w-px bg-gray-200" />
+
+            {/* Text color */}
+            <label
+              title="Couleur du texte"
+              className={`relative flex flex-col items-center justify-center w-7 h-7 rounded-md ${
+                focusedBlock ? 'cursor-pointer hover:bg-gray-200' : 'opacity-30 cursor-not-allowed'
+              }`}
+            >
+              <span className="text-[11px] font-bold leading-none text-gray-700">A</span>
+              <span
+                className="mt-0.5 w-4 h-[3px] rounded-sm border border-gray-300"
+                style={{ backgroundColor: focusedBlock ? rgbToHex(focusedBlock.color) : '#000000' }}
+              />
+              <input
+                type="color"
+                value={focusedBlock ? rgbToHex(focusedBlock.color) : '#000000'}
+                onChange={(e) => handleColorChange(e.target.value)}
+                disabled={!focusedBlock}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
+              />
+            </label>
           </div>
         )}
       </div>
@@ -378,6 +425,7 @@ export default function EditorLayout({
             onBlockBlur={() => setFocusedBlockId(null)}
             onTextChange={onTextChange}
             onBlockResize={onBlockResize}
+            onBlockMove={onBlockMove}
             onEraseBlock={onEraseBlock}
             onAddTextBlock={onAddTextBlock}
             activeTool={activeTool}

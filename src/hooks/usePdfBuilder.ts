@@ -119,26 +119,26 @@ export function usePdfBuilder() {
             if (!isBlockModified(block)) continue;
 
             const fontSize = Math.min(Math.max(block.fontSize, 4), 72);
-            const margin = 1;
             const font = pickFont(block);
 
-            const coverW = Math.max(block.originalWidth, block.width) + margin * 2;
-            const blockH = Math.max(block.originalHeight, block.height);
-            const coverH = blockH + fontSize + margin * 2;
-            const coverX = block.x - margin;
-            const coverY = block.y - blockH - margin;
+            // Cover the original text with a white rectangle sized tightly to
+            // the original text bounds, so it never overflows onto nearby PDF
+            // elements (lines, rules, etc.). Added blocks have no original
+            // text — there is nothing to mask.
+            if (block.originalText !== '') {
+              const origFs = block.originalFontSize || fontSize;
+              const padX = 0.75; // hairline horizontal margin
+              pdfPage.drawRectangle({
+                x: block.originalX - padX,
+                y: block.originalY - block.originalHeight + origFs * 0.72,
+                width: block.originalWidth + padX * 2,
+                height: block.originalHeight + origFs * 0.18,
+                color: rgb(1, 1, 1),
+                borderWidth: 0,
+              });
+            }
 
-            // White rectangle to cover original text
-            pdfPage.drawRectangle({
-              x: coverX,
-              y: coverY,
-              width: coverW,
-              height: coverH,
-              color: rgb(1, 1, 1),
-              borderWidth: 0,
-            });
-
-            // Skip text drawing for erased blocks (just white rect)
+            // Skip text drawing for erased blocks (just the white rect)
             if (block.isErased || !block.text) continue;
 
             const lineHeight = fontSize * 1.3;

@@ -11,6 +11,8 @@ export interface TextBlock {
   originalText: string;
   x: number;
   y: number;
+  originalX: number;
+  originalY: number;
   width: number;
   height: number;
   originalWidth: number;
@@ -25,6 +27,7 @@ export interface TextBlock {
   isItalic: boolean;
   originalIsItalic: boolean;
   color: RgbColor;
+  originalColor: RgbColor;
   transform: number[];
   isErased?: boolean;
 }

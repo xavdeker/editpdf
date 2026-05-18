@@ -14,7 +14,7 @@ export default function App() {
   const [fileName, setFileName] = useState('');
   const [currentPage, setCurrentPage] = useState(0);
 
-  const { pages, isLoading, isScannedPdf, parsePdf, updateTextBlock, updateBlockFormat, eraseBlock, addTextBlock, resizeBlock, resetAllText } =
+  const { pages, isLoading, isScannedPdf, parsePdf, updateTextBlock, updateBlockFormat, eraseBlock, addTextBlock, resizeBlock, moveBlock, resetAllText } =
     usePdfParser();
   const [highlights, setHighlights] = useState<HighlightAnnotation[]>([]);
   const [penStrokes, setPenStrokes] = useState<PenStroke[]>([]);
@@ -165,6 +165,7 @@ export default function App() {
             onEraseBlock={eraseBlock}
             onAddTextBlock={addTextBlock}
             onBlockResize={resizeBlock}
+            onBlockMove={moveBlock}
             onReset={() => { resetAllText(); setHighlights([]); setPenStrokes([]); }}
             highlights={highlights}
             onHighlightsChange={setHighlights}

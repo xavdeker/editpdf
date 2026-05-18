@@ -28,51 +28,70 @@ function xOverlap(
   return aMinX - tolerance <= bMaxX && bMinX - tolerance <= aMaxX;
 }
 
-/** Build ordered color queues per font name from the operator list.
- *  Each text-showing op records (fontName → color) in order.
- *  When consuming, each textContent item dequeues the next color for its font. */
-async function extractTextColorQueues(
-  page: { getOperatorList: () => Promise<{ fnArray: number[]; argsArray: unknown[][] }> }
-): Promise<Map<string, RgbColor[]>> {
-  const OPS = pdfjsLib.OPS;
-  const ops = await page.getOperatorList();
-  const queues = new Map<string, RgbColor[]>();
-  let currentColor: RgbColor = { r: 0, g: 0, b: 0 };
-  let currentFont = '';
+/**
+ * Sample the dominant text (ink) color of a block from the rendered page
+ * pixels. Using what pdf.js actually drew is far more reliable than parsing
+ * color operators (which break on ICC / Separation / pattern color spaces).
+ * Returns null when no reliable ink color is found.
+ */
+function sampleBlockColor(
+  img: ImageData,
+  block: TextBlock,
+  pageHeight: number,
+  scale: number
+): RgbColor | null {
+  const fs = block.fontSize;
+  // Block bounds → canvas pixels (PDF origin bottom-left, canvas top-left)
+  const x0 = Math.max(0, Math.floor(block.x * scale));
+  const x1 = Math.min(img.width, Math.ceil((block.x + block.width) * scale));
+  const topPdf = block.y + fs * 0.85;                // ascender of the top line
+  const botPdf = block.y - block.height + fs * 0.7;  // descender of the bottom line
+  const y0 = Math.max(0, Math.floor((pageHeight - topPdf) * scale));
+  const y1 = Math.min(img.height, Math.ceil((pageHeight - botPdf) * scale));
+  if (x1 - x0 < 2 || y1 - y0 < 2) return null;
 
-  for (let i = 0; i < ops.fnArray.length; i++) {
-    const fn = ops.fnArray[i];
-    const args = ops.argsArray[i];
+  const data = img.data;
+  const W = img.width;
 
-    if (fn === OPS.setFillRGBColor) {
-      currentColor = { r: args[0] as number, g: args[1] as number, b: args[2] as number };
-    } else if (fn === OPS.setFillGray) {
-      const g = args[0] as number;
-      currentColor = { r: g, g: g, b: g };
-    } else if (fn === OPS.setFillCMYKColor) {
-      const [c, m, y, k] = args as number[];
-      currentColor = {
-        r: (1 - c) * (1 - k),
-        g: (1 - m) * (1 - k),
-        b: (1 - y) * (1 - k),
-      };
-    } else if (fn === OPS.setFont) {
-      currentFont = args[0] as string;
-    } else if (
-      fn === OPS.showText ||
-      fn === OPS.showSpacedText ||
-      fn === OPS.nextLineShowText ||
-      fn === OPS.nextLineSetSpacingShowText
-    ) {
-      if (currentFont) {
-        let q = queues.get(currentFont);
-        if (!q) { q = []; queues.set(currentFont, q); }
-        q.push({ ...currentColor });
-      }
+  // 1. Background = most common (quantized) color inside the box
+  const hist = new Map<number, number>();
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * W + x) * 4;
+      const key = ((data[i] >> 3) << 10) | ((data[i + 1] >> 3) << 5) | (data[i + 2] >> 3);
+      hist.set(key, (hist.get(key) ?? 0) + 1);
     }
   }
+  let bgKey = 0, bgCount = -1;
+  for (const [k, c] of hist) if (c > bgCount) { bgCount = c; bgKey = k; }
+  const bgR = ((bgKey >> 10) & 31) << 3;
+  const bgG = ((bgKey >> 5) & 31) << 3;
+  const bgB = (bgKey & 31) << 3;
 
-  return queues;
+  // 2. Strongest ink pixel = largest distance from the background
+  let maxDist = 0;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * W + x) * 4;
+      const d = Math.abs(data[i] - bgR) + Math.abs(data[i + 1] - bgG) + Math.abs(data[i + 2] - bgB);
+      if (d > maxDist) maxDist = d;
+    }
+  }
+  if (maxDist < 45) return null; // no real ink (blank / whitespace block)
+
+  // 3. Average the inked core pixels (closest to the strongest ink), which
+  //    avoids the anti-aliased edge pixels that blend toward the background
+  const threshold = maxDist * 0.8;
+  let r = 0, g = 0, b = 0, n = 0;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * W + x) * 4;
+      const d = Math.abs(data[i] - bgR) + Math.abs(data[i + 1] - bgG) + Math.abs(data[i + 2] - bgB);
+      if (d >= threshold) { r += data[i]; g += data[i + 1]; b += data[i + 2]; n++; }
+    }
+  }
+  if (n === 0) return null;
+  return { r: r / n / 255, g: g / n / 255, b: b / n / 255 };
 }
 
 /** Detect bold/italic from a font name string */
@@ -273,6 +292,8 @@ function groupItems(items: RawItem[], pageIndex: number): TextBlock[] {
       originalText: fullText,
       x: minX,
       y: maxY,
+      originalX: minX,
+      originalY: maxY,
       width: blockWidth,
       height: blockHeight,
       originalWidth: blockWidth,
@@ -287,6 +308,7 @@ function groupItems(items: RawItem[], pageIndex: number): TextBlock[] {
       isItalic: dominantItem.isItalic,
       originalIsItalic: dominantItem.isItalic,
       color: dominantColor.color,
+      originalColor: dominantColor.color,
       transform: allItems[0].transform,
     });
   });
@@ -316,11 +338,8 @@ export function usePdfParser() {
         const viewport = page.getViewport({ scale: 1 });
         const textContent = await page.getTextContent();
 
-        // Extract font color queues and styles from operator list
-        const colorQueues = await extractTextColorQueues(page);
+        // Extract bold/italic styles from the operator list
         const fontStyles = await extractFontStyles(page);
-        // Track consumption index per font
-        const colorIndices = new Map<string, number>();
 
         const rawItems: RawItem[] = [];
 
@@ -340,20 +359,6 @@ export function usePdfParser() {
           // Use font style from commonObjs (more reliable) with fallback to name parsing
           const { isBold, isItalic } = fontStyles.get(fontName) ?? parseFontStyle(fontName);
 
-          // Dequeue next color for this font (ordered, handles same font with different colors)
-          const queue = colorQueues.get(fontName);
-          const idx = colorIndices.get(fontName) ?? 0;
-          let itemColor: RgbColor;
-          if (queue && idx < queue.length) {
-            itemColor = queue[idx];
-            colorIndices.set(fontName, idx + 1);
-          } else if (queue && queue.length > 0) {
-            // Exhausted queue — reuse last known color for this font
-            itemColor = queue[queue.length - 1];
-          } else {
-            itemColor = { r: 0, g: 0, b: 0 };
-          }
-
           rawItems.push({
             str: textItem.str,
             x: tx[4],
@@ -365,7 +370,8 @@ export function usePdfParser() {
             fontFamily,
             isBold,
             isItalic,
-            color: itemColor,
+            // Placeholder — the real color is sampled from the rendered page below
+            color: { r: 0, g: 0, b: 0 },
             transform: tx,
           });
 
@@ -373,6 +379,31 @@ export function usePdfParser() {
         }
 
         const textBlocks = groupItems(rawItems, i);
+
+        // Sample each block's real text color from the rendered page pixels
+        if (textBlocks.length > 0) {
+          try {
+            const RENDER_SCALE = 1.5;
+            const rvp = page.getViewport({ scale: RENDER_SCALE });
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.ceil(rvp.width);
+            canvas.height = Math.ceil(rvp.height);
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            if (ctx) {
+              await page.render({ canvasContext: ctx, viewport: rvp }).promise;
+              const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              for (const block of textBlocks) {
+                const c = sampleBlockColor(img, block, viewport.height, RENDER_SCALE);
+                if (c) {
+                  block.color = c;
+                  block.originalColor = c;
+                }
+              }
+            }
+          } catch (err) {
+            console.warn('Color sampling failed on page', i, err);
+          }
+        }
 
         extractedPages.push({
           pageIndex: i,
@@ -425,8 +456,22 @@ export function usePdfParser() {
     []
   );
 
+  const moveBlock = useCallback(
+    (blockId: string, newX: number, newY: number) => {
+      setPages((prev) =>
+        prev.map((page) => ({
+          ...page,
+          textBlocks: page.textBlocks.map((block) =>
+            block.id === blockId ? { ...block, x: newX, y: newY } : block
+          ),
+        }))
+      );
+    },
+    []
+  );
+
   const updateBlockFormat = useCallback(
-    (blockId: string, format: Partial<Pick<TextBlock, 'fontSize' | 'isBold' | 'isItalic' | 'fontFamily'>>) => {
+    (blockId: string, format: Partial<Pick<TextBlock, 'fontSize' | 'isBold' | 'isItalic' | 'fontFamily' | 'color'>>) => {
       setPages((prev) =>
         prev.map((page) => ({
           ...page,
@@ -442,12 +487,23 @@ export function usePdfParser() {
   const eraseBlock = useCallback(
     (blockId: string) => {
       setPages((prev) =>
-        prev.map((page) => ({
-          ...page,
-          textBlocks: page.textBlocks.map((block) =>
-            block.id === blockId ? { ...block, isErased: true, text: '' } : block
-          ),
-        }))
+        prev.map((page) => {
+          const target = page.textBlocks.find((b) => b.id === blockId);
+          // Added text blocks (no original text) are removed outright
+          if (target && target.originalText === '') {
+            return {
+              ...page,
+              textBlocks: page.textBlocks.filter((b) => b.id !== blockId),
+            };
+          }
+          // Original blocks stay flagged as erased (covered by a white rect on export)
+          return {
+            ...page,
+            textBlocks: page.textBlocks.map((block) =>
+              block.id === blockId ? { ...block, isErased: true, text: '' } : block
+            ),
+          };
+        })
       );
     },
     []
@@ -463,6 +519,8 @@ export function usePdfParser() {
         originalText: '',
         x,
         y,
+        originalX: x,
+        originalY: y,
         width: 150,
         height: 20,
         originalWidth: 0,
@@ -477,6 +535,7 @@ export function usePdfParser() {
         isItalic: false,
         originalIsItalic: false,
         color: { r: 0, g: 0, b: 0 },
+        originalColor: { r: 0, g: 0, b: 0 },
         transform: [14, 0, 0, 14, x, y],
       };
       setPages((prev) =>
@@ -500,10 +559,13 @@ export function usePdfParser() {
           .map((block) => ({
             ...block,
             text: block.originalText,
+            x: block.originalX,
+            y: block.originalY,
             width: block.originalWidth,
             height: block.originalHeight,
             fontSize: block.originalFontSize,
             fontFamily: block.originalFontFamily,
+            color: block.originalColor,
             isBold: block.originalIsBold,
             isItalic: block.originalIsItalic,
             isErased: undefined,
@@ -523,6 +585,7 @@ export function usePdfParser() {
     eraseBlock,
     addTextBlock,
     resizeBlock,
+    moveBlock,
     resetAllText,
   };
 }

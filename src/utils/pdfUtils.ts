@@ -172,16 +172,25 @@ export function mapPdfFontToWebFont(fontName: string, pdfJsFontFamily: string): 
  */
 export function isBlockModified(block: {
   text: string; originalText: string;
+  x: number; originalX: number;
+  y: number; originalY: number;
   fontSize: number; originalFontSize: number;
   fontFamily: string; originalFontFamily: string;
   isBold: boolean; originalIsBold: boolean;
   isItalic: boolean; originalIsItalic: boolean;
+  color: { r: number; g: number; b: number };
+  originalColor: { r: number; g: number; b: number };
   isErased?: boolean;
 }): boolean {
   return block.text !== block.originalText
+    || block.x !== block.originalX
+    || block.y !== block.originalY
     || block.fontSize !== block.originalFontSize
     || block.fontFamily !== block.originalFontFamily
     || block.isBold !== block.originalIsBold
     || block.isItalic !== block.originalIsItalic
+    || block.color.r !== block.originalColor.r
+    || block.color.g !== block.originalColor.g
+    || block.color.b !== block.originalColor.b
     || !!block.isErased;
 }

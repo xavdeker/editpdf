@@ -13,6 +13,7 @@ interface PdfViewerProps {
   onBlockBlur: () => void;
   onTextChange: (blockId: string, newText: string) => void;
   onBlockResize: (blockId: string, newWidth: number, newHeight: number) => void;
+  onBlockMove: (blockId: string, newX: number, newY: number) => void;
   onEraseBlock: (blockId: string) => void;
   onAddTextBlock: (pageIndex: number, x: number, y: number) => string;
   activeTool: Tool;
@@ -53,6 +54,7 @@ export default function PdfViewer({
   onBlockBlur,
   onTextChange,
   onBlockResize,
+  onBlockMove,
   onEraseBlock,
   onAddTextBlock,
   activeTool,
@@ -81,6 +83,11 @@ export default function PdfViewer({
   const [dragEdge, setDragEdge] = useState<Edge | null>(null);
   const [dragDelta, setDragDelta] = useState(0);
   const dragRef = useRef<{ startPos: number; blockId: string; edge: Edge } | null>(null);
+
+  // Live move preview
+  const [movingBlockId, setMovingBlockId] = useState<string | null>(null);
+  const [moveOffset, setMoveOffset] = useState({ x: 0, y: 0 });
+  const didDragRef = useRef(false); // true when the last block interaction was a move drag
 
   // Drawing state (highlight + pen)
   const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null);
@@ -158,12 +165,15 @@ export default function PdfViewer({
     const cw = canvas.width;
 
     for (const block of pageContent.textBlocks) {
-      if (!isBlockModified(block) && block.id !== editingBlockId) continue;
+      if (!isBlockModified(block) && block.id !== editingBlockId && block.id !== movingBlockId) continue;
+      // Only original text needs masking; added blocks have nothing to cover.
+      if (block.originalText === '') continue;
       const fs = block.originalFontSize || block.fontSize;
-      const x = Math.round(block.x * sX - 1);
-      const y = Math.round((pageContent.height - block.y) * sY - fs * sY - 1);
-      const w = Math.round(Math.max(block.originalWidth, block.width) * sX + 2);
-      const h = Math.round((Math.max(block.originalHeight, block.height) + fs * 0.3) * sY + 2);
+      // Tight rect over the original text bounds (matches the exported PDF).
+      const x = Math.round(block.originalX * sX - 1);
+      const y = Math.round((pageContent.height - block.originalY) * sY - fs * 0.9 * sY - 1);
+      const w = Math.round(block.originalWidth * sX + 2);
+      const h = Math.round((block.originalHeight + fs * 0.18) * sY + 2);
 
       // Sample background color from a few pixels at the edges of the block area
       // (corners + edges, avoiding text in the center)
@@ -192,7 +202,7 @@ export default function PdfViewer({
 
       ctx.fillRect(x, y, w, h);
     }
-  }, [pageContent, canvasSize, editingBlockId, renderGen]);
+  }, [pageContent, canvasSize, editingBlockId, movingBlockId, renderGen]);
 
   // Reset on page change
   useEffect(() => {
@@ -200,7 +210,26 @@ export default function PdfViewer({
     setSelectedBlockId(null);
     setDragEdge(null);
     setDragDelta(0);
+    setMovingBlockId(null);
+    setMoveOffset({ x: 0, y: 0 });
   }, [currentPage]);
+
+  // Delete the selected block with the keyboard
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!selectedBlockId || editingBlockId) return;
+      if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      e.preventDefault();
+      onEraseBlock(selectedBlockId);
+      setSelectedBlockId(null);
+      setEditingBlockId(null);
+      onBlockBlur();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [selectedBlockId, editingBlockId, onEraseBlock, onBlockBlur]);
 
   // Focus contentEditable div and select all text
   useEffect(() => {
@@ -242,6 +271,11 @@ export default function PdfViewer({
       let left = block.x * scaleX;
       let top = (pageContent.height - block.y) * scaleY - fontSize;
 
+      if (movingBlockId === block.id) {
+        left += moveOffset.x;
+        top += moveOffset.y;
+      }
+
       if (dragEdge && selectedBlockId === block.id && dragDelta !== 0) {
         switch (dragEdge) {
           case 'right':  w = Math.max(w + dragDelta, 20); break;
@@ -253,7 +287,7 @@ export default function PdfViewer({
 
       return { left, top, width: w, height: h };
     },
-    [getScales, pageContent, dragEdge, dragDelta, selectedBlockId]
+    [getScales, pageContent, dragEdge, dragDelta, selectedBlockId, movingBlockId, moveOffset]
   );
 
   // Get mouse position relative to container in PDF coordinates
@@ -275,6 +309,8 @@ export default function PdfViewer({
 
   // --- Tool-specific interactions ---
   const handleBlockClick = (block: TextBlock) => {
+    // Ignore the click that ends a move drag
+    if (didDragRef.current) { didDragRef.current = false; return; }
     if (activeTool === 'eraser') {
       onEraseBlock(block.id);
       return;
@@ -449,6 +485,55 @@ export default function PdfViewer({
     [selectedBlockId, getScales, pageContent, onBlockResize]
   );
 
+  // --- Drag to move (body of an already-selected block) ---
+  const handleBlockMouseDown = useCallback(
+    (e: React.MouseEvent, block: TextBlock) => {
+      didDragRef.current = false;
+      if (activeTool !== 'select') return;
+      if (selectedBlockId !== block.id || editingBlockId === block.id) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let dragged = false;
+
+      const onMouseMove = (ev: MouseEvent) => {
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        if (!dragged && Math.hypot(dx, dy) < 3) return; // small threshold = still a click
+        if (!dragged) {
+          dragged = true;
+          setMovingBlockId(block.id);
+        }
+        setMoveOffset({ x: dx, y: dy });
+      };
+
+      const onMouseUp = (ev: MouseEvent) => {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+        if (dragged) {
+          didDragRef.current = true;
+          const { scaleX, scaleY } = getScales();
+          if (scaleX > 0 && pageContent) {
+            const dx = (ev.clientX - startX) / scaleX;
+            const dy = (ev.clientY - startY) / scaleY;
+            // Screen Y grows downward, PDF Y grows upward
+            const newX = Math.max(0, Math.min(block.x + dx, pageContent.width));
+            const newY = Math.max(0, Math.min(block.y - dy, pageContent.height));
+            onBlockMove(block.id, newX, newY);
+          }
+        }
+        setMovingBlockId(null);
+        setMoveOffset({ x: 0, y: 0 });
+      };
+
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    },
+    [activeTool, selectedBlockId, editingBlockId, getScales, pageContent, onBlockMove]
+  );
+
   const blocks = pageContent?.textBlocks.filter((b) => !b.isErased) ?? [];
   const erasedBlocks = pageContent?.textBlocks.filter((b) => b.isErased) ?? [];
   const isDrawing = activeTool === 'highlight' || activeTool === 'pen';
@@ -543,7 +628,7 @@ export default function PdfViewer({
       {/* Modified text overlays */}
       {canvasSize.width > 0 &&
         blocks.map((block) => {
-          if (!isBlockModified(block)) return null;
+          if (!isBlockModified(block) && movingBlockId !== block.id) return null;
           if (editingBlockId === block.id) return null;
 
           const rect = getBlockRect(block);
@@ -581,24 +666,22 @@ export default function PdfViewer({
 
           const isSelected = selectedBlockId === block.id;
           const isFocused = focusedBlockId === block.id && !isSelected;
-          const isModified = isBlockModified(block);
           const rect = getBlockRect(block);
           const isEraserMode = activeTool === 'eraser';
 
           return (
             <div
               key={block.id}
+              onMouseDown={(e) => handleBlockMouseDown(e, block)}
               onClick={(e) => { e.stopPropagation(); handleBlockClick(block); }}
               onDoubleClick={(e) => { e.stopPropagation(); handleBlockDoubleClick(block); }}
               className={`absolute rounded-sm transition-colors duration-150 ${
                 isEraserMode
                   ? 'cursor-pointer border border-transparent hover:border-red-400 hover:bg-red-400/10'
                   : isSelected
-                  ? 'border-2 border-teal-600 bg-teal-600/5 z-10 cursor-pointer'
+                  ? 'border-2 border-teal-600 bg-teal-600/5 z-10 cursor-move'
                   : isFocused
                   ? 'border-2 border-teal-600/50 bg-teal-600/5 cursor-pointer'
-                  : isModified
-                  ? 'border border-teal-600/40 hover:bg-teal-600/10 cursor-pointer'
                   : 'border border-transparent hover:border-teal-600/30 hover:bg-teal-600/5 cursor-pointer'
               }`}
               style={{
@@ -623,8 +706,22 @@ export default function PdfViewer({
                     <div className="h-10 w-1.5 bg-teal-600 rounded-full shadow group-hover/handle:bg-teal-500 group-hover/handle:w-2 transition-all" />
                   </div>
                   <div className="absolute -top-7 left-1/2 -translate-x-1/2 whitespace-nowrap px-2 py-0.5 bg-gray-900/90 text-white text-[9px] rounded-md shadow-lg pointer-events-none backdrop-blur-sm">
-                    Double-clic pour editer
+                    Glisser pour deplacer · Double-clic pour editer
                   </div>
+                  <button
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEraseBlock(block.id);
+                      deselectBlock();
+                    }}
+                    title="Supprimer cette zone de texte (Suppr)"
+                    className="absolute -top-3 -right-3 w-6 h-6 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center shadow-lg transition-colors"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
                 </>
               )}
             </div>
